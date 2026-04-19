@@ -1,0 +1,6 @@
+{
+  "name": "VeloVirtual: FTMS Engine & GPX Simulator",
+  "description": "A full-stack fitness platform that converts FTMS (Bluetooth) data to virtual speed, featuring GPX route cloning and 3D simulation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
