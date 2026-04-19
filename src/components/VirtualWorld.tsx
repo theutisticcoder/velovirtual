@@ -19,7 +19,7 @@ export const VirtualWorld: React.FC<VirtualWorldProps> = ({ points, currentIndex
 
     // Setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87ceeb); // Sky blue
+    scene.background = new THREE.Color(0x0A0A0B); // Theme bg
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(75, containerRef.current.clientWidth / containerRef.current.clientHeight, 0.1, 2000);
@@ -92,7 +92,7 @@ export const VirtualWorld: React.FC<VirtualWorldProps> = ({ points, currentIndex
     });
 
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    const material = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 3 });
+    const material = new THREE.LineBasicMaterial({ color: 0x00F59B, linewidth: 3 });
     const line = new THREE.Line(geometry, material);
     line.name = 'gpx-path';
     scene.add(line);

@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Helvetica Neue", Arial, sans-serif;
+}
+
+:root {
+  --bg: #0A0A0B;
+  --surface: #151517;
+  --surface-light: #1E1E21;
+  --accent: #00F59B;
+  --accent-dim: rgba(0, 245, 155, 0.1);
+  --text-main: #FFFFFF;
+  --text-muted: #88888D;
+  --border: #2D2D31;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+}
