@@ -43,11 +43,29 @@ const App: React.FC = () => {
     currentPointIndex: 0,
     isActive: false,
   });
+  
+  // High-frequency simulation state ref
+  const simRef = useRef({
+    distance: 0,
+    currentIndex: 0,
+    virtualSpeed: 0,
+    grade: 0,
+    lastUiUpdate: 0
+  });
+
   const [isSimulatorMode, setIsSimulatorMode] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
 
   const lastUpdateRef = useRef<number>(Date.now());
   const requestRef = useRef<number>(0);
+
+  // Sync ref with initial state if needed
+  useEffect(() => {
+    if (points.length > 0 && simState.distance === 0) {
+      simRef.current.distance = 0;
+      simRef.current.currentIndex = 0;
+    }
+  }, [points]);
 
   // --- GPX Handling ---
 
@@ -91,47 +109,50 @@ const App: React.FC = () => {
   // --- Simulation Loop ---
 
   const updateSimulation = () => {
-    const now = Date.now();
-    const dt = (now - lastUpdateRef.current) / 1000; // seconds
-    lastUpdateRef.current = now;
-
     if (!simState.isActive || points.length < 2) {
       if (simState.isActive) requestRef.current = requestAnimationFrame(updateSimulation);
       return;
     }
 
-    setSimState(prev => {
-      // Calculate grade from GPX at current position
-      const currentIndex = prev.currentPointIndex;
-      const nextIndex = Math.min(currentIndex + 1, points.length - 1);
-      const p1 = points[currentIndex];
-      const p2 = points[nextIndex];
-      const distDiff = p2.dist - p1.dist;
-      const eleDiff = p2.ele - p1.ele;
-      const grade = distDiff > 1 ? (eleDiff / distDiff) * 100 : 0;
+    const now = Date.now();
+    const dt = (now - lastUpdateRef.current) / 1000;
+    lastUpdateRef.current = now;
 
-      // Physics!
-      const vMps = calculateVelocity(ftmsData.power, grade, DEFAULT_BIKE_CONFIG);
-      const virtualSpeed = mpsToKph(vMps);
+    // 1. Calculate physics at 60fps in Ref
+    const currentIndex = simRef.current.currentIndex;
+    const nextIndex = Math.min(currentIndex + 1, points.length - 1);
+    const p1 = points[currentIndex];
+    const p2 = points[nextIndex];
+    const distDiff = p2.dist - p1.dist;
+    const eleDiff = p2.ele - p1.ele;
+    const grade = distDiff > 1 ? (eleDiff / distDiff) * 100 : 0;
 
-      // Advance distance
-      const newDistance = prev.distance + vMps * dt;
+    const vMps = calculateVelocity(ftmsData.power, grade, DEFAULT_BIKE_CONFIG);
+    const virtualSpeed = mpsToKph(vMps);
+    const newDistance = simRef.current.distance + vMps * dt;
 
-      // Find new point index based on distance
-      let newPointIndex = currentIndex;
-      while (newPointIndex < points.length - 1 && points[newPointIndex + 1].dist < newDistance) {
-        newPointIndex++;
-      }
+    let newPointIndex = currentIndex;
+    while (newPointIndex < points.length - 1 && points[newPointIndex + 1].dist < newDistance) {
+      newPointIndex++;
+    }
 
-      return {
+    simRef.current.distance = newDistance;
+    simRef.current.currentIndex = newPointIndex;
+    simRef.current.virtualSpeed = virtualSpeed;
+    simRef.current.grade = grade;
+
+    // 2. Throttle React state update to ~30fps to reduce re-renders
+    if (now - simRef.current.lastUiUpdate > 33) {
+      setSimState(prev => ({
         ...prev,
         virtualSpeed,
         distance: newDistance,
         grade,
         currentPointIndex: newPointIndex,
         isActive: newPointIndex < points.length - 1
-      };
-    });
+      }));
+      simRef.current.lastUiUpdate = now;
+    }
 
     requestRef.current = requestAnimationFrame(updateSimulation);
   };
