@@ -17,10 +17,11 @@ export const VirtualWorld: React.FC<VirtualWorldProps> = ({ points, currentIndex
   
   // Track normalized coordinates
   const trackData = useMemo(() => {
-    if (points.length === 0) return null;
-    const scale = 50000; // Degrees to world units
-    const elevationScale = 0.1; // Exaggeration
+    if (points.length < 2) return null;
+    const scale = 50000;
+    const elevationScale = 0.1;
     
+    // 1. Create world points with consistent scaling
     const worldPoints = points.map(p => new THREE.Vector3(
       (p.lon - points[0].lon) * scale,
       p.ele * elevationScale,
@@ -28,7 +29,31 @@ export const VirtualWorld: React.FC<VirtualWorldProps> = ({ points, currentIndex
     ));
 
     const curve = new THREE.CatmullRomCurve3(worldPoints);
-    return { worldPoints, curve };
+    
+    // 2. Pre-generate a spatial grid for fast terrain lookup
+    // Find bounds for the grid
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    worldPoints.forEach(p => {
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
+    });
+
+    const padding = 500;
+    const gridDim = 40; // Resolution of heightmap cache
+    const heightMap: { [key: string]: number } = {};
+    
+    // Populate grid with nearest elevations
+    for (let j = 0; j < worldPoints.length; j += 5) {
+      const p = worldPoints[j];
+      const gx = Math.floor((p.x - minX + padding) / gridDim);
+      const gz = Math.floor((p.z - minZ + padding) / gridDim);
+      const key = `${gx},${gz}`;
+      if (heightMap[key] === undefined || Math.abs(p.y) > Math.abs(heightMap[key])) {
+        heightMap[key] = p.y;
+      }
+    }
+
+    return { worldPoints, curve, minX, maxX, minZ, maxZ, padding, gridDim, heightMap };
   }, [points]);
 
   useEffect(() => {
@@ -123,22 +148,15 @@ export const VirtualWorld: React.FC<VirtualWorldProps> = ({ points, currentIndex
     scene.add(line);
 
     // 3. Virtual Terrain
-    // Find bounds
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    worldPoints.forEach(p => {
-      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
-      minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
-    });
-
-    const padding = 1000;
+    const { minX, maxX, minZ, maxZ, padding, gridDim, heightMap } = trackData;
     const terrainWidth = (maxX - minX) + padding * 2;
     const terrainHeight = (maxZ - minZ) + padding * 2;
-    const segments = 64;
+    const segments = 48; // Slightly lower for smoother look and perf
 
     const terrainGeo = new THREE.PlaneGeometry(terrainWidth, terrainHeight, segments, segments);
     terrainGeo.rotateX(-Math.PI / 2);
     
-    // Displace terrain based on elevation
+    // Displace terrain using fast grid lookup
     const positions = terrainGeo.attributes.position.array as Float32Array;
     const center = new THREE.Vector2((minX + maxX) / 2, (minZ + maxZ) / 2);
     
@@ -146,34 +164,38 @@ export const VirtualWorld: React.FC<VirtualWorldProps> = ({ points, currentIndex
       const vx = positions[i] + center.x;
       const vz = positions[i+2] + center.y;
       
-      // Calculate influence from nearest track point
-      // For performance, we find the closest point in a sparse set of world points
-      let nearestDist = Infinity;
-      let nearestEle = 0;
+      const gx = Math.floor((vx - minX + padding) / gridDim);
+      const gz = Math.floor((vz - minZ + padding) / gridDim);
       
-      // Check every 10th point for performance
-      for (let j = 0; j < worldPoints.length; j += 10) {
-        const p = worldPoints[j];
-        const d = Math.sqrt((vx - p.x) ** 2 + (vz - p.z) ** 2);
-        if (d < nearestDist) {
-          nearestDist = d;
-          nearestEle = p.y;
+      let baseHeight = -10;
+      let isNearTrack = false;
+
+      // Check surrounding grid cells for influence
+      for(let dx = -2; dx <= 2; dx++) {
+        for(let dz = -2; dz <= 2; dz++) {
+          const key = `${gx + dx},${gz + dz}`;
+          if (heightMap[key] !== undefined) {
+             const distToTrack = Math.sqrt((dx * gridDim) ** 2 + (dz * gridDim) ** 2);
+             const weight = Math.exp(-distToTrack * 0.02);
+             baseHeight = Math.max(baseHeight, heightMap[key] * weight);
+             if (distToTrack < gridDim) isNearTrack = true;
+          }
         }
       }
 
-      const noise = (Math.sin(vx * 0.05) * Math.cos(vz * 0.05)) * 10;
-      const falloff = Math.exp(-nearestDist * 0.005);
+      // Add broader terrain variation
+      const noise = (Math.sin(vx * 0.002) + Math.cos(vz * 0.002)) * 15;
       
-      // Base height + noise in distant areas + track-aligned height near the road
-      positions[i+1] = (nearestEle * falloff + noise * (1 - falloff)) - 5;
+      // If near track, favor track height to avoid road being buried
+      positions[i+1] = baseHeight + (isNearTrack ? 0 : noise);
     }
     terrainGeo.computeVertexNormals();
 
     const terrainMat = new THREE.MeshStandardMaterial({ 
-      color: 0x151517, 
-      wireframe: false,
-      flatShading: true,
-      roughness: 0.9,
+      color: 0x0A0A0B, 
+      roughness: 1,
+      metalness: 0,
+      flatShading: true
     });
     const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
     terrainMesh.position.set((minX + maxX) / 2, -1, (minZ + maxZ) / 2);
@@ -209,17 +231,20 @@ export const VirtualWorld: React.FC<VirtualWorldProps> = ({ points, currentIndex
     const safeProgress = Math.max(0, Math.min(0.999, progress));
     
     const pos = curve.getPointAt(safeProgress);
-    const lookAtPos = curve.getPointAt(Math.min(0.999, safeProgress + 0.01));
+    const lookAtPos = curve.getPointAt(Math.min(0.999, safeProgress + 0.001));
     
-    bikeRef.current.position.lerp(pos, 0.2);
-    bikeRef.current.lookAt(lookAtPos);
+    // Offset bike to be ON TOP of road tube (tube radius is 0.5)
+    const bikePos = pos.clone().add(new THREE.Vector3(0, 0.6, 0));
     
-    const cameraOffset = new THREE.Vector3(0, 5, -12);
+    bikeRef.current.position.lerp(bikePos, 0.4);
+    bikeRef.current.lookAt(lookAtPos.clone().add(new THREE.Vector3(0, 0.6, 0)));
+    
+    const cameraOffset = new THREE.Vector3(0, 4, -10);
     cameraOffset.applyQuaternion(bikeRef.current.quaternion);
-    const targetCameraPos = pos.clone().add(cameraOffset);
+    const targetCameraPos = bikePos.clone().add(cameraOffset);
     
-    cameraRef.current.position.lerp(targetCameraPos, 0.1);
-    cameraRef.current.lookAt(pos);
+    cameraRef.current.position.lerp(targetCameraPos, 0.15);
+    cameraRef.current.lookAt(bikePos);
     
   }, [currentIndex, trackData, points.length]);
 
